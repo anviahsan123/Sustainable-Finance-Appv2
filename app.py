@@ -429,6 +429,7 @@ ret_tilde = returns + esg_preference * (sustainability_scores / 100)
 # Feasibility rules
 # ------------------------------------------------------------
 feasible = np.ones_like(weights, dtype=bool)
+
 if exclude_low_esg:
     feasible &= sustainability_scores >= esg_floor
 
@@ -443,28 +444,38 @@ if np.all(~feasible):
     st.error("No feasible portfolio meets your current exclusions and sustainability rules. Relax one of the constraints.")
     st.stop()
 
-
-
-utilities = np.where(feasible, utilities, -np.inf)
-sharpes = np.where(feasible, sharpes, -np.inf)
-
-
+feasible_mask = feasible
+infeasible_mask = ~feasible
 
 # ------------------------------------------------------------
-# Tangency portfolio
+# ESG-adjusted tangency portfolio
 # ------------------------------------------------------------
-tangency_idx = np.argmax(sharpes)
+sharpes_esg = np.where(
+    (risks > 0) & feasible,
+    (ret_tilde - r_free) / risks,
+    -np.inf
+)
+
+tangency_idx = np.argmax(sharpes_esg)
 w1_tan = weights[tangency_idx]
 w2_tan = 1 - w1_tan
 
 ret_tan = returns[tangency_idx]
 sd_tan = risks[tangency_idx]
 sus_tan = sustainability_scores[tangency_idx]
-sharpe_tan = sharpes[tangency_idx]
+ret_tan_tilde = ret_tilde[tangency_idx]
+sharpe_tan = sharpes_esg[tangency_idx]
 
 # ------------------------------------------------------------
 # Optimal risky portfolio
+# Use full utility with ESG
 # ------------------------------------------------------------
+utilities = np.where(
+    feasible,
+    returns - 0.5 * risk_aversion * (risks ** 2) + esg_preference * (sustainability_scores / 100),
+    -np.inf
+)
+
 optimal_idx = np.argmax(utilities)
 w1_opt_risky = weights[optimal_idx]
 w2_opt_risky = 1 - w1_opt_risky
@@ -476,9 +487,10 @@ u_opt_risky = utilities[optimal_idx]
 
 # ------------------------------------------------------------
 # Final recommended portfolio with risk-free asset
+# Use ESG-adjusted tangency allocation rule
 # ------------------------------------------------------------
-if sd_opt_risky > 0:
-    y = (ret_opt_risky - r_free) / (risk_aversion * sd_opt_risky**2)
+if sd_tan > 0:
+    y = ((ret_tan + esg_preference * (sus_tan / 100)) - r_free) / (risk_aversion * sd_tan**2)
 else:
     y = 0.0
 
@@ -488,24 +500,19 @@ else:
     y = min(max(y, 0.0), 1.0)
 
 w_rf = 1 - y
-w1_complete = y * w1_opt_risky
-w2_complete = y * w2_opt_risky
+w1_complete = y * w1_tan
+w2_complete = y * w2_tan
 
-ret_complete = r_free + y * (ret_opt_risky - r_free)
-sd_complete = y * sd_opt_risky
-
-if (w1_complete + w2_complete) > 0:
-    sus_complete = (w1_complete * adj_esg1 + w2_complete * adj_esg2) / (w1_complete + w2_complete)
-else:
-    sus_complete = 0.0
-
+ret_complete = r_free + y * (ret_tan - r_free)
+sd_complete = y * sd_tan
+sus_complete = y * sus_tan
+ret_complete_tilde = ret_complete + esg_preference * (sus_complete / 100)
 # ------------------------------------------------------------
 # Utility breakdown
 # ------------------------------------------------------------
-expected_return_component = ret_opt_risky
-risk_penalty_component = 0.5 * risk_aversion * (sd_opt_risky**2)
-sustainability_reward_component = esg_preference * (sus_opt_risky / 100)
-
+expected_return_component = ret_complete
+risk_penalty_component = 0.5 * risk_aversion * (sd_complete**2)
+sustainability_reward_component = esg_preference * (sus_complete / 100)
 # ------------------------------------------------------------
 # Explanations
 # ------------------------------------------------------------
@@ -830,15 +837,15 @@ with tab3:
 
     compare_left, compare_right = st.columns(2)
     with compare_left:
-        st.markdown("### Recommended vs Maximum-Sharpe")
+        st.markdown("### Recommended vs ESG-adjusted Tangency")
         st.metric("Recommended return", f"{ret_complete * 100:.2f}%")
         st.metric("Recommended risk", f"{sd_complete * 100:.2f}%")
         st.metric("Recommended sustainability", f"{sus_complete:.2f}")
     with compare_right:
         st.markdown("### Alternative Benchmark")
-        st.metric("Max-Sharpe return", f"{ret_tan * 100:.2f}%")
-        st.metric("Max-Sharpe risk", f"{sd_tan * 100:.2f}%")
-        st.metric("Max-Sharpe sustainability", f"{sus_tan:.2f}")
+st.metric("Tangency return", f"{ret_tan * 100:.2f}%")
+st.metric("Tangency risk", f"{sd_tan * 100:.2f}%")
+st.metric("Tangency sustainability", f"{sus_tan:.2f}")
 
 # ------------------------------------------------------------
 # TAB 4
