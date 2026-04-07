@@ -418,14 +418,17 @@ else:
 
 returns = np.array([portfolio_return(w, r1_used, r2_used) for w in weights])
 risks = np.array([portfolio_sd(w, sd1, sd2, rho12) for w in weights])
-sustainability_scores = np.array([portfolio_weighted_average(w, adj_esg1, adj_esg2) for w in weights])
-utilities = np.array(
-    [utility(ret, sd, sus, risk_aversion, esg_preference) for ret, sd, sus in zip(returns, risks, sustainability_scores)]
+sustainability_scores = np.array(
+    [portfolio_weighted_average(w, adj_esg1, adj_esg2) for w in weights]
 )
-sharpes = np.array([sharpe_ratio(ret, sd, r_free) for ret, sd in zip(returns, risks)])
 
+# ESG-valued return
+ret_tilde = returns + esg_preference * (sustainability_scores / 100)
+
+# ------------------------------------------------------------
+# Feasibility rules
+# ------------------------------------------------------------
 feasible = np.ones_like(weights, dtype=bool)
-
 if exclude_low_esg:
     feasible &= sustainability_scores >= esg_floor
 
@@ -436,12 +439,16 @@ elif asset1_excluded:
 elif asset2_excluded:
     feasible &= weights >= 1
 
-utilities = np.where(feasible, utilities, -np.inf)
-sharpes = np.where(feasible, sharpes, -np.inf)
-
 if np.all(~feasible):
     st.error("No feasible portfolio meets your current exclusions and sustainability rules. Relax one of the constraints.")
     st.stop()
+
+
+
+utilities = np.where(feasible, utilities, -np.inf)
+sharpes = np.where(feasible, sharpes, -np.inf)
+
+
 
 # ------------------------------------------------------------
 # Tangency portfolio
@@ -708,75 +715,59 @@ with tab1:
 # TAB 2
 # ------------------------------------------------------------
 with tab2:
-    st.subheader("Sustainable Frontier")
-    st.caption("Risk-return space with feasible and infeasible portfolio mixes.")
+    st.subheader("Utility Optimisation View")
+    st.caption("ESG-efficient frontier, ESG-adjusted capital market line, and utility curve.")
 
     fig1, ax1 = plt.subplots(figsize=(10, 6))
 
-    infeasible_mask = ~feasible
-    feasible_mask = feasible
+    # --- Efficient frontier as upper envelope ---
+    order = np.argsort(risks)
+    risks_sorted = risks[order]
+    ret_tilde_sorted = ret_tilde[order]
 
-    if np.any(infeasible_mask):
-        ax1.scatter(
-            risks[infeasible_mask],
-            returns[infeasible_mask],
-            s=12,
-            alpha=0.25,
-            label="Infeasible portfolios",
-        )
+    eps = 1e-12
+    running_max = -np.inf
+    risks_eff = []
+    ret_eff = []
 
-    scatter1 = ax1.scatter(
-        risks[feasible_mask],
-        returns[feasible_mask],
-        c=sustainability_scores[feasible_mask],
-        cmap="YlGn",
-        s=16,
-        alpha=0.95,
-        edgecolors="black",
-        linewidths=0.05,
-        label="Feasible risky portfolios",
-    )
+    for sd_i, r_i in zip(risks_sorted, ret_tilde_sorted):
+        if r_i >= running_max + eps:
+            risks_eff.append(sd_i)
+            ret_eff.append(r_i)
+            running_max = r_i
 
-    ax1.scatter(sd1, r1_used, s=140, marker="o", label=asset1_name, zorder=3)
-    ax1.scatter(sd2, r2_used, s=140, marker="o", label=asset2_name, zorder=3)
-    ax1.scatter(sd_tan, ret_tan, s=220, marker="*", label="Tangency portfolio", zorder=5)
-    ax1.scatter(sd_complete, ret_complete, s=170, marker="X", label="Recommended portfolio", zorder=6)
-    ax1.scatter(0, r_free, s=140, marker="s", label="Risk-free asset", zorder=4)
+    risks_eff = np.array(risks_eff)
+    ret_eff = np.array(ret_eff)
 
-    sd_line = np.linspace(0, max(risks) * 1.15, 100)
-    if sd_opt_risky > 0:
-        ret_line = r_free + ((ret_opt_risky - r_free) / sd_opt_risky) * sd_line
-        ax1.plot(sd_line, ret_line, linestyle="--", linewidth=1.0, label="Capital allocation line", zorder=1)
+    ax1.plot(risks_eff, ret_eff, linewidth=2, label="ESG-efficient Frontier (E[R] + λ·ESG)")
+    ax1.plot([sd_tan], [ret_tan_tilde], marker="*", markersize=16, label="Tangency Portfolio (ESG)")
+    ax1.plot([sd_complete], [ret_complete_tilde], marker="D", markersize=12, label="Optimal Portfolio (ESG)")
 
-    ax1.annotate(
-        f"Recommended ({profile_label_from_persona(persona)})",
-        xy=(sd_complete, ret_complete),
-        xytext=(sd_complete + 0.005, ret_complete + 0.005),
-        fontsize=9,
-    )
-    ax1.annotate(
-        f"Tangency\nSharpe {sharpe_tan:.2f}",
-        xy=(sd_tan, ret_tan),
-        xytext=(sd_tan + 0.005, ret_tan + 0.005),
-        fontsize=9,
-    )
+    # ESG-adjusted capital market line
+    sd_max = max(risks) * 1.2
+    sd_cml = np.linspace(0.0, sd_max, 200)
+    ret_cml_tilde = r_free + ((ret_tan_tilde - r_free) / sd_tan) * sd_cml
+    ax1.plot(sd_cml, ret_cml_tilde, linestyle="--", linewidth=2, label="Capital Market Line (ESG)")
 
-    ax1.set_xlabel("Risk (standard deviation)")
-    ax1.set_ylabel("Expected return")
-    ax1.set_title("Risk-Return Frontier Coloured by Sustainability Score")
+    # Utility curve through optimal portfolio
+    U_tilde_opt = ret_complete_tilde - 0.5 * risk_aversion * (sd_complete**2)
+    sigma_curve = np.linspace(0.0, sd_max, 200)
+    ret_utility_tilde = U_tilde_opt + 0.5 * risk_aversion * (sigma_curve**2)
+    ax1.plot(sigma_curve, ret_utility_tilde, linestyle=":", linewidth=2, label="Utility Curve (ESG)")
+
+    ax1.set_xlabel("Risk (Standard Deviation)")
+    ax1.set_ylabel("ESG-valued Expected Return (E[R] + λ·ESG)")
+    ax1.set_title("ESG-aware Portfolio Optimisation")
     ax1.grid(True, alpha=0.3)
     ax1.legend()
-
-    cbar1 = plt.colorbar(scatter1, ax=ax1)
-    cbar1.set_label("Portfolio sustainability score")
 
     st.pyplot(fig1)
 
     st.markdown(
         f"""
         <div class="small-note">
-        Feasible portfolios satisfy all active rules. Grey points fail at least one condition.
-        Current sustainability lens: <b>{esg_method}</b>. {get_method_explanation()}
+        This view shows the optimisation in ESG-valued return space, where λ = <b>{esg_preference:.3f}</b>
+        and risk aversion γ = <b>{risk_aversion:.2f}</b>.
         </div>
         """,
         unsafe_allow_html=True,
