@@ -418,16 +418,12 @@ else:
 
 returns = np.array([portfolio_return(w, r1_used, r2_used) for w in weights])
 risks = np.array([portfolio_sd(w, sd1, sd2, rho12) for w in weights])
-sustainability_scores = np.array(
-    [portfolio_weighted_average(w, adj_esg1, adj_esg2) for w in weights]
+sustainability_scores = np.array([portfolio_weighted_average(w, adj_esg1, adj_esg2) for w in weights])
+utilities = np.array(
+    [utility(ret, sd, sus, risk_aversion, esg_preference) for ret, sd, sus in zip(returns, risks, sustainability_scores)]
 )
+sharpes = np.array([sharpe_ratio(ret, sd, r_free) for ret, sd in zip(returns, risks)])
 
-# ESG-valued return
-ret_tilde = returns + esg_preference * (sustainability_scores / 100)
-
-# ------------------------------------------------------------
-# Feasibility rules
-# ------------------------------------------------------------
 feasible = np.ones_like(weights, dtype=bool)
 
 if exclude_low_esg:
@@ -440,42 +436,28 @@ elif asset1_excluded:
 elif asset2_excluded:
     feasible &= weights >= 1
 
+utilities = np.where(feasible, utilities, -np.inf)
+sharpes = np.where(feasible, sharpes, -np.inf)
+
 if np.all(~feasible):
     st.error("No feasible portfolio meets your current exclusions and sustainability rules. Relax one of the constraints.")
     st.stop()
 
-feasible_mask = feasible
-infeasible_mask = ~feasible
-
 # ------------------------------------------------------------
-# ESG-adjusted tangency portfolio
+# Tangency portfolio
 # ------------------------------------------------------------
-sharpes_esg = np.where(
-    (risks > 0) & feasible,
-    (ret_tilde - r_free) / risks,
-    -np.inf
-)
-
-tangency_idx = np.argmax(sharpes_esg)
+tangency_idx = np.argmax(sharpes)
 w1_tan = weights[tangency_idx]
 w2_tan = 1 - w1_tan
 
 ret_tan = returns[tangency_idx]
 sd_tan = risks[tangency_idx]
 sus_tan = sustainability_scores[tangency_idx]
-ret_tan_tilde = ret_tilde[tangency_idx]
-sharpe_tan = sharpes_esg[tangency_idx]
+sharpe_tan = sharpes[tangency_idx]
 
 # ------------------------------------------------------------
 # Optimal risky portfolio
-# Use full utility with ESG
 # ------------------------------------------------------------
-utilities = np.where(
-    feasible,
-    returns - 0.5 * risk_aversion * (risks ** 2) + esg_preference * (sustainability_scores / 100),
-    -np.inf
-)
-
 optimal_idx = np.argmax(utilities)
 w1_opt_risky = weights[optimal_idx]
 w2_opt_risky = 1 - w1_opt_risky
@@ -487,10 +469,9 @@ u_opt_risky = utilities[optimal_idx]
 
 # ------------------------------------------------------------
 # Final recommended portfolio with risk-free asset
-# Use ESG-adjusted tangency allocation rule
 # ------------------------------------------------------------
-if sd_tan > 0:
-    y = ((ret_tan + esg_preference * (sus_tan / 100)) - r_free) / (risk_aversion * sd_tan**2)
+if sd_opt_risky > 0:
+    y = (ret_opt_risky - r_free) / (risk_aversion * sd_opt_risky**2)
 else:
     y = 0.0
 
@@ -500,19 +481,26 @@ else:
     y = min(max(y, 0.0), 1.0)
 
 w_rf = 1 - y
-w1_complete = y * w1_tan
-w2_complete = y * w2_tan
+w1_complete = y * w1_opt_risky
+w2_complete = y * w2_opt_risky
 
-ret_complete = r_free + y * (ret_tan - r_free)
-sd_complete = y * sd_tan
-sus_complete = y * sus_tan
-ret_complete_tilde = ret_complete + esg_preference * (sus_complete / 100)
+ret_complete = r_free + y * (ret_opt_risky - r_free)
+sd_complete = y * sd_opt_risky
+
+if (w1_complete + w2_complete) > 0:
+    sus_complete = (w1_complete * adj_esg1 + w2_complete * adj_esg2) / (w1_complete + w2_complete)
+else:
+    sus_complete = 0.0
+
 # ------------------------------------------------------------
 # Utility breakdown
 # ------------------------------------------------------------
-expected_return_component = ret_complete
-risk_penalty_component = 0.5 * risk_aversion * (sd_complete**2)
-sustainability_reward_component = esg_preference * (sus_complete / 100)
+expected_return_component = ret_opt_risky
+risk_penalty_component = 0.5 * risk_aversion * (sd_opt_risky**2)
+sustainability_reward_component = esg_preference * (sus_opt_risky / 100)
+
+# Utility level of the recommended portfolio
+u_complete = ret_complete - 0.5 * risk_aversion * (sd_complete ** 2) + esg_preference * (sus_complete / 100)
 # ------------------------------------------------------------
 # Explanations
 # ------------------------------------------------------------
@@ -722,59 +710,84 @@ with tab1:
 # TAB 2
 # ------------------------------------------------------------
 with tab2:
-    st.subheader("Utility Optimisation View")
-    st.caption("ESG-efficient frontier, ESG-adjusted capital market line, and utility curve.")
+    st.subheader("Sustainable Frontier")
+    st.caption("Risk-return space with feasible and infeasible portfolio mixes.")
 
     fig1, ax1 = plt.subplots(figsize=(10, 6))
 
-    # --- Efficient frontier as upper envelope ---
-    order = np.argsort(risks)
-    risks_sorted = risks[order]
-    ret_tilde_sorted = ret_tilde[order]
+    infeasible_mask = ~feasible
+    feasible_mask = feasible
 
-    eps = 1e-12
-    running_max = -np.inf
-    risks_eff = []
-    ret_eff = []
+    if np.any(infeasible_mask):
+        ax1.scatter(
+            risks[infeasible_mask],
+            returns[infeasible_mask],
+            s=12,
+            alpha=0.25,
+            label="Infeasible portfolios",
+        )
 
-    for sd_i, r_i in zip(risks_sorted, ret_tilde_sorted):
-        if r_i >= running_max + eps:
-            risks_eff.append(sd_i)
-            ret_eff.append(r_i)
-            running_max = r_i
+    scatter1 = ax1.scatter(
+        risks[feasible_mask],
+        returns[feasible_mask],
+        c=sustainability_scores[feasible_mask],
+        cmap="YlGn",
+        s=16,
+        alpha=0.95,
+        edgecolors="black",
+        linewidths=0.05,
+        label="Feasible risky portfolios",
+    )
 
-    risks_eff = np.array(risks_eff)
-    ret_eff = np.array(ret_eff)
+    ax1.scatter(sd1, r1_used, s=140, marker="o", label=asset1_name, zorder=3)
+    ax1.scatter(sd2, r2_used, s=140, marker="o", label=asset2_name, zorder=3)
+    ax1.scatter(sd_tan, ret_tan, s=220, marker="*", label="Tangency portfolio", zorder=5)
+    ax1.scatter(sd_complete, ret_complete, s=170, marker="X", label="Recommended portfolio", zorder=6)
+    ax1.scatter(0, r_free, s=140, marker="s", label="Risk-free asset", zorder=4)
 
-    ax1.plot(risks_eff, ret_eff, linewidth=2, label="ESG-efficient Frontier (E[R] + λ·ESG)")
-    ax1.plot([sd_tan], [ret_tan_tilde], marker="*", markersize=16, label="Tangency Portfolio (ESG)")
-    ax1.plot([sd_complete], [ret_complete_tilde], marker="D", markersize=12, label="Optimal Portfolio (ESG)")
+    sd_line = np.linspace(0, max(risks) * 1.15, 200)
 
-    # ESG-adjusted capital market line
-    sd_max = max(risks) * 1.2
-    sd_cml = np.linspace(0.0, sd_max, 200)
-    ret_cml_tilde = r_free + ((ret_tan_tilde - r_free) / sd_tan) * sd_cml
-    ax1.plot(sd_cml, ret_cml_tilde, linestyle="--", linewidth=2, label="Capital Market Line (ESG)")
+# Capital allocation line
+if sd_opt_risky > 0:
+    ret_line = r_free + ((ret_opt_risky - r_free) / sd_opt_risky) * sd_line
+    ax1.plot(sd_line, ret_line, linestyle="--", linewidth=1.2, label="Capital allocation line", zorder=1)
 
-    # Utility curve through optimal portfolio
-    U_tilde_opt = ret_complete_tilde - 0.5 * risk_aversion * (sd_complete**2)
-    sigma_curve = np.linspace(0.0, sd_max, 200)
-    ret_utility_tilde = U_tilde_opt + 0.5 * risk_aversion * (sigma_curve**2)
-    ax1.plot(sigma_curve, ret_utility_tilde, linestyle=":", linewidth=2, label="Utility Curve (ESG)")
+# Utility curve (illustrative slice at the recommended portfolio's sustainability level)
+# Rearranged from:
+# U = E(Rp) - 0.5*gamma*sigma^2 + delta*Sustainability
+# => E(Rp) = U + 0.5*gamma*sigma^2 - delta*Sustainability
+utility_curve = u_complete + 0.5 * risk_aversion * (sd_line ** 2) - esg_preference * (sus_complete / 100)
+ax1.plot(sd_line, utility_curve, linestyle=":", linewidth=2.2, color="purple", label="Utility curve", zorder=2)
+    
+    ax1.annotate(
+        f"Recommended ({profile_label_from_persona(persona)})",
+        xy=(sd_complete, ret_complete),
+        xytext=(sd_complete + 0.005, ret_complete + 0.005),
+        fontsize=9,
+    )
+    ax1.annotate(
+        f"Tangency\nSharpe {sharpe_tan:.2f}",
+        xy=(sd_tan, ret_tan),
+        xytext=(sd_tan + 0.005, ret_tan + 0.005),
+        fontsize=9,
+    )
 
-    ax1.set_xlabel("Risk (Standard Deviation)")
-    ax1.set_ylabel("ESG-valued Expected Return (E[R] + λ·ESG)")
-    ax1.set_title("ESG-aware Portfolio Optimisation")
+    ax1.set_xlabel("Risk (standard deviation)")
+    ax1.set_ylabel("Expected return")
+    ax1.set_title("Risk-Return Frontier Coloured by Sustainability Score")
     ax1.grid(True, alpha=0.3)
     ax1.legend()
+
+    cbar1 = plt.colorbar(scatter1, ax=ax1)
+    cbar1.set_label("Portfolio sustainability score")
 
     st.pyplot(fig1)
 
     st.markdown(
         f"""
         <div class="small-note">
-        This view shows the optimisation in ESG-valued return space, where λ = <b>{esg_preference:.3f}</b>
-        and risk aversion γ = <b>{risk_aversion:.2f}</b>.
+        Feasible portfolios satisfy all active rules. Grey points fail at least one condition.
+        Current sustainability lens: <b>{esg_method}</b>. {get_method_explanation()}
         </div>
         """,
         unsafe_allow_html=True,
@@ -837,15 +850,15 @@ with tab3:
 
     compare_left, compare_right = st.columns(2)
     with compare_left:
-        st.markdown("### Recommended vs ESG-adjusted Tangency")
+        st.markdown("### Recommended vs Maximum-Sharpe")
         st.metric("Recommended return", f"{ret_complete * 100:.2f}%")
         st.metric("Recommended risk", f"{sd_complete * 100:.2f}%")
         st.metric("Recommended sustainability", f"{sus_complete:.2f}")
     with compare_right:
         st.markdown("### Alternative Benchmark")
-st.metric("Tangency return", f"{ret_tan * 100:.2f}%")
-st.metric("Tangency risk", f"{sd_tan * 100:.2f}%")
-st.metric("Tangency sustainability", f"{sus_tan:.2f}")
+        st.metric("Max-Sharpe return", f"{ret_tan * 100:.2f}%")
+        st.metric("Max-Sharpe risk", f"{sd_tan * 100:.2f}%")
+        st.metric("Max-Sharpe sustainability", f"{sus_tan:.2f}")
 
 # ------------------------------------------------------------
 # TAB 4
