@@ -747,18 +747,18 @@ with tab2:
 
     sd_line = np.linspace(0, max(risks) * 1.15, 200)
 
-# Capital allocation line
-if sd_opt_risky > 0:
-    ret_line = r_free + ((ret_opt_risky - r_free) / sd_opt_risky) * sd_line
-    ax1.plot(sd_line, ret_line, linestyle="--", linewidth=1.2, label="Capital allocation line", zorder=1)
+    # Capital allocation line
+    if sd_opt_risky > 0:
+        ret_line = r_free + ((ret_opt_risky - r_free) / sd_opt_risky) * sd_line
+        ax1.plot(sd_line, ret_line, linestyle="--", linewidth=1.2, label="Capital allocation line", zorder=1)
 
-# Utility curve (illustrative slice at the recommended portfolio's sustainability level)
-# Rearranged from:
-# U = E(Rp) - 0.5*gamma*sigma^2 + delta*Sustainability
-# => E(Rp) = U + 0.5*gamma*sigma^2 - delta*Sustainability
-utility_curve = u_complete + 0.5 * risk_aversion * (sd_line ** 2) - esg_preference * (sus_complete / 100)
-ax1.plot(sd_line, utility_curve, linestyle=":", linewidth=2.2, color="purple", label="Utility curve", zorder=2)
-    
+    # Utility curve (illustrative slice at the recommended portfolio's sustainability level)
+    # Rearranged from:
+    # U = E(Rp) - 0.5*gamma*sigma^2 + delta*Sustainability
+    # => E(Rp) = U + 0.5*gamma*sigma^2 - delta*Sustainability
+    utility_curve = u_complete + 0.5 * risk_aversion * (sd_line ** 2) - esg_preference * (sus_complete / 100)
+    ax1.plot(sd_line, utility_curve, linestyle=":", linewidth=2.2, color="purple", label="Utility curve", zorder=2)
+
     ax1.annotate(
         f"Recommended ({profile_label_from_persona(persona)})",
         xy=(sd_complete, ret_complete),
@@ -788,11 +788,11 @@ ax1.plot(sd_line, utility_curve, linestyle=":", linewidth=2.2, color="purple", l
         <div class="small-note">
         Feasible portfolios satisfy all active rules. Grey points fail at least one condition.
         Current sustainability lens: <b>{esg_method}</b>. {get_method_explanation()}
+        The dotted purple line is an illustrative utility curve through the recommended portfolio.
         </div>
         """,
         unsafe_allow_html=True,
     )
-
 # ------------------------------------------------------------
 # TAB 3
 # ------------------------------------------------------------
